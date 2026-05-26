@@ -45,3 +45,45 @@ export async function recordDrift(context: TriggerContext, e: DriftEvent): Promi
         }
     }
 }
+
+/** Read recent drift events, most recent first, for the Drift Log dashboard. */
+export async function readRecentDrift(
+    context: Pick<TriggerContext, "redis">,
+    limit = 25,
+): Promise<DriftEvent[]> {
+    const members = await context.redis.zRange(DRIFT_INDEX, 0, -1);
+    const ids = members
+        .map((m) => m.member)
+        .reverse() // zRange is ascending by detectedAt; newest first for display
+        .slice(0, limit);
+
+    const events: DriftEvent[] = [];
+    for (const id of ids) {
+        const h = await context.redis.hGetAll(driftKey(id));
+        if (!h || !h.detectedAt) continue;
+        events.push({
+            thingId: id,
+            type: h.type === "comment" ? "comment" : "post",
+            score: Number(h.score) || 0,
+            signals: safeParseArray(h.signals),
+            approvedBy: h.approvedBy ?? "unknown",
+            author: h.author ?? "unknown",
+            permalink: h.permalink ?? "",
+            beforeExcerpt: h.beforeExcerpt ?? "",
+            afterExcerpt: h.afterExcerpt ?? "",
+            action: (h.action as DriftAction) ?? "log",
+            detectedAt: Number(h.detectedAt) || 0,
+        });
+    }
+    return events;
+}
+
+function safeParseArray(s: string | undefined): string[] {
+    if (!s) return [];
+    try {
+        const v = JSON.parse(s);
+        return Array.isArray(v) ? (v as string[]) : [];
+    } catch {
+        return [];
+    }
+}
