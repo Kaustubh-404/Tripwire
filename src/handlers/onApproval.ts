@@ -1,20 +1,58 @@
 import type { ModAction } from "@devvit/protos";
 import type { TriggerContext } from "@devvit/public-api";
+import { domainsOf, extractLinks } from "../lib/links.js";
+import { writeSnapshot, type Snapshot } from "../lib/snapshot.js";
 
 /** Mod-log action strings that mean "a moderator cleared this content". */
 const APPROVE_ACTIONS = new Set(["approvelink", "approvecomment"]);
 
 /**
- * Fires on every mod action. We only care about approvals: when a mod approves a
- * post or comment, we snapshot what they approved so we can later detect drift.
- *
- * Phase 1 implements the snapshot. For now we confirm the trigger fires and that
- * the payload carries the action type and the approving moderator.
+ * When a moderator approves a post or comment, snapshot exactly what they approved —
+ * the body, its links, and which mod approved it. This is the baseline Tripwire diffs
+ * future edits against. We build the snapshot straight from the trigger payload, so no
+ * extra API calls are needed.
  */
-export async function onApproval(event: ModAction, _context: TriggerContext): Promise<void> {
+export async function onApproval(event: ModAction, context: TriggerContext): Promise<void> {
     const action = event.action ?? "";
     if (!APPROVE_ACTIONS.has(action)) return;
 
-    const targetId = event.targetPost?.id ?? event.targetComment?.id;
-    console.log(`[tripwire] approval: action=${action} target=${targetId} by=u/${event.moderator?.name}`);
+    const approvedBy = event.moderator?.name ?? "unknown";
+    const approvedAt = Date.now();
+
+    if (action === "approvelink" && event.targetPost) {
+        const post = event.targetPost;
+        const links = extractLinks(post.selftext);
+        // For a link post, the post's own URL is external content that was approved too.
+        if (!post.isSelf && post.url) links.push(post.url);
+
+        const snap: Snapshot = {
+            type: "post",
+            title: post.title ?? "",
+            body: post.selftext ?? "",
+            links,
+            domains: domainsOf(links),
+            approvedBy,
+            approvedAt,
+        };
+        await writeSnapshot(context, post.id, snap);
+        console.log(`[tripwire] captured post ${post.id} (${links.length} links) approved by u/${approvedBy}`);
+        return;
+    }
+
+    if (action === "approvecomment" && event.targetComment) {
+        const comment = event.targetComment;
+        const links = extractLinks(comment.body);
+
+        const snap: Snapshot = {
+            type: "comment",
+            title: "",
+            body: comment.body ?? "",
+            links,
+            domains: domainsOf(links),
+            approvedBy,
+            approvedAt,
+        };
+        await writeSnapshot(context, comment.id, snap);
+        console.log(`[tripwire] captured comment ${comment.id} (${links.length} links) approved by u/${approvedBy}`);
+    }
 }
