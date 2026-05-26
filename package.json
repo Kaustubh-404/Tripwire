@@ -1,0 +1,20 @@
+{
+  "private": true,
+  "name": "tripwire",
+  "version": "0.0.1",
+  "license": "BSD-3-Clause",
+  "type": "module",
+  "scripts": {
+    "type-check": "tsc --noEmit",
+    "test": "vitest --run",
+    "upload": "devvit upload"
+  },
+  "dependencies": {
+    "@devvit/protos": "0.12.24",
+    "@devvit/public-api": "0.12.24"
+  },
+  "devDependencies": {
+    "typescript": "5.8.3",
+    "vitest": "^4.0.7"
+  }
+}

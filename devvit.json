@@ -1,0 +1,13 @@
+{
+    "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
+    "name": "tripwire",
+    "blocks": {
+        "entry": "src/main.ts",
+        "triggers": [
+            "onAppInstall",
+            "onModAction",
+            "onPostUpdate",
+            "onCommentUpdate"
+        ]
+    }
+}

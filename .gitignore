@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.devvit/
+*.log
+.env
+.env.*
+.DS_Store
+.claude/
+docs/
