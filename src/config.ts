@@ -17,7 +17,7 @@ export type DriftAction = "requeue" | "notify" | "log";
 /** Fallback defaults, used if a setting is somehow unset. Mirror the defaults below. */
 export const DEFAULTS = {
     mode: "requeue" as DriftAction,
-    threshold: 0.5,
+    threshold: 0.55,
     lateEditHours: 0,
     watchComments: false,
 };
@@ -42,8 +42,8 @@ export const appSettings: SettingsFormField[] = [
         name: SETTING.threshold,
         label: "Drift sensitivity threshold (0.0 – 1.0)",
         helpText:
-            "Content scoring at or above this value is treated as drifted. Lower = more sensitive. Default 0.5. A newly-added external link alone scores 0.6.",
-        defaultValue: 0.5,
+            "Content scoring at or above this value is treated as drifted. Default 0.55. Tripwire's bands are precision-tuned: a single newly-added external link is 0.6, a new external domain ~0.75, and high-confidence signals (cloaked link, brand look-alike, dangerous scheme, bidi attack) reach 0.85+ for auto-action.",
+        defaultValue: 0.55,
     },
     {
         type: "number",

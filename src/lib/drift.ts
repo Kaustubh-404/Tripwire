@@ -1,7 +1,9 @@
-import { domainsOf, isCloaked, newItems, type LinkRef } from "./links.js";
-import { containsConfusable, containsInvisible } from "./normalize.js";
+import { domainsOf, hrefDomain, isCloaked, isDangerousScheme, newItems, type LinkRef } from "./links.js";
+import { containsBidi, containsConfusable, containsInvisible } from "./normalize.js";
+import { decodeHostname } from "./punycode.js";
 import { solicitationSignals } from "./solicitation.js";
-import { contentChange } from "./textsim.js";
+import { analyzeChange } from "./textsim.js";
+import { findLookalike } from "./typosquat.js";
 import { urlRisk } from "./url.js";
 
 /**
@@ -10,10 +12,15 @@ import { urlRisk } from "./url.js";
  * Tripwire doesn't classify intent. It measures, across independent *categories*, how far
  * approved content has drifted in ways that correlate with bait-and-switch abuse, then
  * combines them with a calibrated noisy-OR so independent weak signals reinforce while no
- * single category can run away. Everything routes over the moderator's threshold to a human.
+ * single category can run away. Everything above threshold routes to a human.
  *
- * Categories: LINK (new/risky/cloaked links), SOLICITATION (new off-platform rails),
- * OBFUSCATION (newly added invisible/homoglyph chars), STRUCTURAL (rewrite magnitude + timing).
+ * Categories: LINK (new/risky/cloaked links, dangerous schemes, typosquats),
+ * SOLICITATION (new off-platform rails), OBFUSCATION (newly added invisible/bidi/homoglyph
+ * chars), STRUCTURAL (rewrite magnitude + added-fraction + timing).
+ *
+ * Calibration follows research-backed precision-first asymmetry: auto-action band starts
+ * at 0.85 so a wrongful auto-removal essentially needs one near-certain category, not two
+ * soft signals adding up. Notify/review tier is high-recall; log is the audit trail.
  */
 
 export type DriftBand = "none" | "low" | "medium" | "high";
@@ -64,19 +71,40 @@ export function scoreDrift(input: DriftInput): DriftResult {
         link = Math.max(link, 0.75);
         signals.push(`new destination domain not in approved version: ${addedDomains[0]}`);
     }
+    // Per-link risk + typosquat lookup for *newly added* links only.
     let maxNewRisk = 0;
     let riskReason = "";
+    let typosquatHit: string | null = null;
     for (const ref of input.currentLinkRefs) {
+        if (isDangerousScheme(ref.href)) {
+            link = noisyOr([link, 0.95]);
+            signals.push(`dangerous URL scheme used: ${ref.href.split(":")[0]}:`);
+            continue;
+        }
         if (!addedLinks.includes(ref.href)) continue;
         const risk = urlRisk(ref.href);
         if (risk.score > maxNewRisk) {
             maxNewRisk = risk.score;
             riskReason = risk.reasons[0] ?? "";
         }
+        // Typosquat / look-alike — check the new link's registrable domain, with
+        // any xn-- labels decoded so homograph spoofs become visible.
+        if (!typosquatHit) {
+            const reg = decodeHostname(hrefDomain(ref.href));
+            const parts = reg.split(".");
+            if (parts.length >= 2) {
+                const la = findLookalike(parts[0], reg);
+                if (la) typosquatHit = la.reason;
+            }
+        }
     }
     if (maxNewRisk > 0) {
         link = noisyOr([link, maxNewRisk]);
         if (riskReason) signals.push(`risky new link — ${riskReason}`);
+    }
+    if (typosquatHit) {
+        link = noisyOr([link, 0.9]);
+        signals.push(`brand look-alike: ${typosquatHit}`);
     }
     const cloaked = input.currentLinkRefs.find((r) => isCloaked(r));
     if (cloaked) {
@@ -99,18 +127,29 @@ export function scoreDrift(input: DriftInput): DriftResult {
         obfuscation = Math.max(obfuscation, 0.4);
         signals.push("hidden/invisible characters added after approval");
     }
+    if (containsBidi(input.currentBody) && !containsBidi(input.approvedBody)) {
+        obfuscation = noisyOr([obfuscation, 0.75]);
+        signals.push("bidi/Trojan-Source control characters added after approval");
+    }
     if (containsConfusable(input.currentBody) && !containsConfusable(input.approvedBody)) {
-        obfuscation = Math.max(obfuscation, 0.5);
+        obfuscation = noisyOr([obfuscation, 0.5]);
         signals.push("homoglyph (look-alike) characters added after approval");
     }
 
-    // ---- STRUCTURAL category (rewrite magnitude + timing) ----
+    // ---- STRUCTURAL category (rewrite + added-fraction + timing) ----
     // Capped low on purpose: a big honest rewrite alone should NOT auto-trigger removal.
     let structural = 0;
-    const change = contentChange(input.approvedBody, input.currentBody);
-    if (change > 0.4) {
-        structural = Math.max(structural, 0.4 * clamp01((change - 0.4) / 0.6));
-        signals.push(`body substantially rewritten (${Math.round(change * 100)}% changed)`);
+    const change = analyzeChange(input.approvedBody, input.currentBody);
+    const netChange = 1 - change.similarity;
+    if (netChange > 0.4) {
+        structural = Math.max(structural, 0.4 * clamp01((netChange - 0.4) / 0.6));
+        signals.push(`body substantially rewritten (${Math.round(netChange * 100)}% net change)`);
+    }
+    // Dilution-resistant: a lot of NEW content (regardless of net similarity) is suspicious
+    // when paired with other signals. Capped low so pure append alone doesn't trigger.
+    if (change.addedFraction > 0.5) {
+        structural = noisyOr([structural, 0.3 * clamp01((change.addedFraction - 0.5) / 0.5)]);
+        signals.push(`${Math.round(change.addedFraction * 100)}% of current text was added after approval`);
     }
     if (input.lateEditHours > 0 && input.minutesSinceApproval > input.lateEditHours * 60) {
         structural = noisyOr([structural, 0.2]);
@@ -121,9 +160,16 @@ export function scoreDrift(input: DriftInput): DriftResult {
     return { score, band: toBand(score), signals, addedLinks, addedDomains };
 }
 
+/**
+ * Bands tuned for precision-first asymmetry (auto-removal must be high-precision):
+ *   high   ≥ 0.85 — auto-action allowed (one near-certain category needed)
+ *   medium ≥ 0.55 — review/notify (human backstop, higher recall)
+ *   low    ≥ 0.30 — audit-only log
+ *   none   <  0.30
+ */
 function toBand(score: number): DriftBand {
-    if (score >= 0.8) return "high";
-    if (score >= 0.5) return "medium";
-    if (score >= 0.25) return "low";
+    if (score >= 0.85) return "high";
+    if (score >= 0.55) return "medium";
+    if (score >= 0.30) return "low";
     return "none";
 }
