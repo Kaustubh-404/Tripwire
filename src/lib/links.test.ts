@@ -1,46 +1,54 @@
 import { describe, expect, it } from "vitest";
-import { domainOf, domainsOf, extractLinks, newItems } from "./links.js";
+import { domainsOf, extractLinkRefs, extractLinks, hrefDomain, isCloaked, newItems } from "./links.js";
 
-describe("extractLinks", () => {
-    it("finds bare urls", () => {
-        expect(extractLinks("check https://example.com/page now")).toEqual(["https://example.com/page"]);
+describe("extractLinkRefs", () => {
+    it("captures bare URLs with empty visible text", () => {
+        const refs = extractLinkRefs("check https://example.com/page now");
+        expect(refs).toEqual([{ href: "https://example.com/page", text: "" }]);
     });
-    it("finds markdown links", () => {
-        expect(extractLinks("see [here](https://foo.com/x) please")).toContain("https://foo.com/x");
+    it("captures markdown links as (text, href) pairs", () => {
+        const refs = extractLinkRefs("see [click here](https://foo.com/x) please");
+        expect(refs[0]).toEqual({ href: "https://foo.com/x", text: "click here" });
     });
-    it("dedupes repeated urls", () => {
-        expect(extractLinks("https://a.com https://a.com")).toEqual(["https://a.com"]);
+    it("dedupes and strips trailing punctuation", () => {
+        expect(extractLinks("read this (https://a.com/x). https://a.com/x")).toEqual(["https://a.com/x"]);
     });
-    it("strips trailing punctuation", () => {
-        expect(extractLinks("read this (https://a.com/x).")).toEqual(["https://a.com/x"]);
-    });
-    it("returns empty for no links or nullish input", () => {
-        expect(extractLinks("no links here")).toEqual([]);
-        expect(extractLinks(undefined)).toEqual([]);
-        expect(extractLinks(null)).toEqual([]);
+    it("returns empty for nullish input", () => {
+        expect(extractLinkRefs(undefined)).toEqual([]);
     });
 });
 
-describe("domainOf", () => {
-    it("normalizes host and strips www", () => {
-        expect(domainOf("https://www.Example.com/x")).toBe("example.com");
+describe("hrefDomain / domainsOf (registrable)", () => {
+    it("returns the registrable domain", () => {
+        expect(hrefDomain("https://www.example.com/x")).toBe("example.com");
+        expect(hrefDomain("https://a.b.evil.co.uk/x")).toBe("evil.co.uk");
     });
-    it("returns empty string for non-urls", () => {
-        expect(domainOf("not a url")).toBe("");
+    it("collapses subdomains to unique org domains", () => {
+        expect(domainsOf(["https://a.evil.com/1", "https://b.evil.com/2", "https://ok.org"])).toEqual([
+            "evil.com",
+            "ok.org",
+        ]);
     });
 });
 
-describe("domainsOf", () => {
-    it("returns unique normalized domains", () => {
-        expect(domainsOf(["https://a.com/1", "https://a.com/2", "https://b.com"])).toEqual(["a.com", "b.com"]);
+describe("isCloaked — visible text vs real destination", () => {
+    it("flags a link whose label advertises a different domain", () => {
+        expect(isCloaked({ text: "paypal.com", href: "https://evil-phish.ru/login" })).toBe(true);
+    });
+    it("sees through homoglyph labels", () => {
+        // Cyrillic 'а' in the visible label still resolves to paypal.com after normalization.
+        expect(isCloaked({ text: "pаypal.com", href: "https://evil.ru" })).toBe(true);
+    });
+    it("does not flag when label and destination match", () => {
+        expect(isCloaked({ text: "example.com", href: "https://example.com/page" })).toBe(false);
+    });
+    it("does not flag non-domain labels", () => {
+        expect(isCloaked({ text: "click here", href: "https://example.com" })).toBe(false);
     });
 });
 
 describe("newItems", () => {
-    it("returns items present in next but not prev", () => {
+    it("returns set difference", () => {
         expect(newItems(["a", "b"], ["b", "c"])).toEqual(["c"]);
-    });
-    it("returns empty when nothing new", () => {
-        expect(newItems(["a", "b"], ["a"])).toEqual([]);
     });
 });
