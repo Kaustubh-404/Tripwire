@@ -1,6 +1,7 @@
 import type { AppInstall, AppUpgrade } from "@devvit/protos";
 import type { TriggerContext } from "@devvit/public-api";
 import { APP_NAME } from "../config.js";
+import { PRUNE_CRON, PRUNE_JOB } from "./prune.js";
 
 /** Set once, on first install, so upgrades don't re-send the welcome. */
 const WELCOMED_KEY = "tw:meta:welcomed";
@@ -9,8 +10,11 @@ const WELCOMED_KEY = "tw:meta:welcomed";
  * Fires on install and upgrade. Tripwire is zero-config — sensible defaults are baked
  * into the settings — so the only onboarding is a one-time welcome modmail explaining
  * what it does and how to tune it. We gate on a Redis flag so upgrades stay silent.
+ * The recurring prune job is (re)scheduled on every install/upgrade.
  */
 export async function onInstall(event: AppInstall | AppUpgrade, context: TriggerContext): Promise<void> {
+    await ensurePruneScheduled(context);
+
     const alreadyWelcomed = await context.redis.get(WELCOMED_KEY);
     if (alreadyWelcomed) {
         console.log("[tripwire] upgrade — defaults retained, watching approvals");
@@ -50,5 +54,18 @@ export async function onInstall(event: AppInstall | AppUpgrade, context: Trigger
         console.log(`[tripwire] installed on r/${context.subredditName ?? context.subredditId} — welcome sent`);
     } catch (err) {
         console.error(`[tripwire] welcome modmail failed: ${String(err)}`);
+    }
+}
+
+/** Ensure exactly one daily prune job is scheduled (cancel any duplicates first). */
+async function ensurePruneScheduled(context: TriggerContext): Promise<void> {
+    try {
+        const jobs = await context.scheduler.listJobs();
+        for (const job of jobs) {
+            if (job.name === PRUNE_JOB) await context.scheduler.cancelJob(job.id);
+        }
+        await context.scheduler.runJob({ name: PRUNE_JOB, cron: PRUNE_CRON });
+    } catch (err) {
+        console.error(`[tripwire] failed to schedule prune job: ${String(err)}`);
     }
 }

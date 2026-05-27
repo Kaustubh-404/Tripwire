@@ -4,6 +4,7 @@ import { createDriftLogPost, DriftLog } from "./driftLogPost.js";
 import { onApproval } from "./handlers/onApproval.js";
 import { onCommentEdit, onPostEdit } from "./handlers/onEdit.js";
 import { onInstall } from "./handlers/onInstall.js";
+import { PRUNE_JOB, pruneWatchlist } from "./handlers/prune.js";
 
 Devvit.configure({
     redditAPI: true,
@@ -11,6 +12,9 @@ Devvit.configure({
 });
 
 Devvit.addSettings(appSettings);
+
+// Maintenance: keep the watchlist index bounded (scheduled daily; see onInstall).
+Devvit.addSchedulerJob({ name: PRUNE_JOB, onRun: pruneWatchlist });
 
 // Capture: snapshot content when a mod approves it.
 Devvit.addTrigger({ event: "ModAction", onEvent: onApproval });

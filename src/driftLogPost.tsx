@@ -2,8 +2,14 @@ import { Devvit, useAsync, useState } from "@devvit/public-api";
 import type { Context, MenuItemOnPressEvent } from "@devvit/public-api";
 import { APP_NAME } from "./config.js";
 import { readRecentDrift, type DriftEvent } from "./lib/driftLog.js";
+import { WATCHLIST } from "./lib/keys.js";
 
 const PAGE_SIZE = 3;
+
+interface DriftLogData {
+    events: DriftEvent[];
+    watching: number;
+}
 
 /** Mod-only dashboard: a paginated log of content that drifted after approval. */
 export const DriftLog: Devvit.CustomPostComponent = (context) => {
@@ -12,10 +18,16 @@ export const DriftLog: Devvit.CustomPostComponent = (context) => {
 
     // useAsync requires a JSON-serializable result; a string always qualifies.
     const { data, loading } = useAsync(
-        async () => JSON.stringify(await readRecentDrift(context, 60)),
+        async () => {
+            const events = await readRecentDrift(context, 60);
+            const watching = await context.redis.zCard(WATCHLIST);
+            return JSON.stringify({ events, watching } satisfies DriftLogData);
+        },
         { depends: refresh },
     );
-    const events: DriftEvent[] = data ? (JSON.parse(data) as DriftEvent[]) : [];
+    const parsed: DriftLogData = data ? (JSON.parse(data) as DriftLogData) : { events: [], watching: 0 };
+    const events = parsed.events;
+    const watching = parsed.watching;
 
     const start = page * PAGE_SIZE;
     const pageEvents = events.slice(start, start + PAGE_SIZE);
@@ -39,13 +51,13 @@ export const DriftLog: Devvit.CustomPostComponent = (context) => {
                 <vstack grow alignment="middle center" gap="small">
                     <text size="medium" weight="bold" color="#ffffff">No drift detected 🎉</text>
                     <text size="small" color="#9aa6ab" wrap alignment="center">
-                        Approved content that gets edited into something suspicious will show up here.
+                        {`Watching ${watching} approved item${watching === 1 ? "" : "s"}. Anything edited into something suspicious after approval shows up here.`}
                     </text>
                 </vstack>
             ) : (
                 <vstack grow gap="small" width="100%">
                     <text size="xsmall" color="#9aa6ab">
-                        {`${events.length} drift event${events.length === 1 ? "" : "s"} · page ${page + 1} of ${Math.max(1, Math.ceil(events.length / PAGE_SIZE))}`}
+                        {`watching ${watching} approved · ${events.length} drift event${events.length === 1 ? "" : "s"} · page ${page + 1} of ${Math.max(1, Math.ceil(events.length / PAGE_SIZE))}`}
                     </text>
                     {pageEvents.map((e) => driftCard(e, context, () => setRefresh(refresh + 1)))}
                     <spacer grow />
