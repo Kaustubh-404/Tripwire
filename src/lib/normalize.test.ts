@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { containsConfusable, containsInvisible, normalizeForMatch, stripInvisible } from "./normalize.js";
+import {
+    containsBidi,
+    containsConfusable,
+    containsInvisible,
+    foldConfusables,
+    mixedScript,
+    normalizeForMatch,
+    stripInvisible,
+} from "./normalize.js";
 
 const ZWSP = String.fromCharCode(0x200b);
 const SOFT_HYPHEN = String.fromCharCode(0x00ad);
@@ -43,5 +51,55 @@ describe("containsInvisible / containsConfusable (signals)", () => {
     it("detects confusables", () => {
         expect(containsConfusable("pаypal")).toBe(true); // Cyrillic a
         expect(containsConfusable("paypal")).toBe(false);
+    });
+});
+
+describe("Trojan-Source / bidi controls", () => {
+    const RLO = String.fromCharCode(0x202e);
+    const LRI = String.fromCharCode(0x2066);
+    it("strips bidi formatting from the match string", () => {
+        expect(normalizeForMatch(`admin${RLO}nimda`)).toBe("adminnimda");
+    });
+    it("flags bidi controls as a signal", () => {
+        expect(containsBidi(`ok ${LRI} text`)).toBe(true);
+        expect(containsBidi("plain text")).toBe(false);
+    });
+});
+
+describe("Tag characters (invisible ASCII smuggling)", () => {
+    it("strips tag characters U+E0000..U+E007F", () => {
+        const tagA = String.fromCodePoint(0xe0061); // tag 'a'
+        expect(normalizeForMatch(`hi${tagA}there`)).toBe("hithere");
+    });
+});
+
+describe("Combining marks / Zalgo", () => {
+    it("strips combining marks from the match string", () => {
+        const zalgo = "p" + "a" + "́" + "ypal"; // 'á' as a + combining acute
+        expect(normalizeForMatch(zalgo)).toBe("paypal");
+    });
+});
+
+describe("foldConfusables — extended coverage", () => {
+    it("folds Armenian and Cherokee look-alikes", () => {
+        expect(foldConfusables("օps")).toBe("ops"); // Armenian o
+        expect(foldConfusables("Ꭺpple")).toBe("apple"); // Cherokee A
+    });
+    it("folds look-alike full-stop characters used to spoof domains", () => {
+        expect(foldConfusables("paypal。com")).toBe("paypal.com"); // ideographic full stop
+    });
+});
+
+describe("mixedScript — single-token Latin + confusable script", () => {
+    it("flags a token mixing ASCII Latin with Cyrillic", () => {
+        // 'p' (Latin) + 'а' (Cyrillic) + 'ypal' — the textbook spoof
+        expect(mixedScript("pаypal")).toBe("Cyrillic");
+    });
+    it("flags Latin + Greek", () => {
+        expect(mixedScript("kατα")).toBe("Greek");
+    });
+    it("does not flag a single-script token", () => {
+        expect(mixedScript("paypal")).toBe("");
+        expect(mixedScript("παγαλ")).toBe(""); // all Greek
     });
 });
